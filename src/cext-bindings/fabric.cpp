@@ -117,29 +117,50 @@ void bind_fabric(py::module_ &module) {
 
   py::class_<xpool::ffnagent::MoeRouterBindingResourceProjection>(ffnagent, "MoeRouterBindingResourceProjection",
                                                                   "Non-owning Router weight addresses.")
-      .def(py::init([](const at::Tensor &weight, const std::optional<at::Tensor> &correction_bias) {
+      .def(py::init([](const at::Tensor &weight, const std::optional<at::Tensor> &correction_bias,
+                       const std::optional<at::Tensor> &bias) {
              return xpool::ffnagent::MoeRouterBindingResourceProjection{
                  .weight_address = require_cuda_address(weight, "MoE Router weight"),
                  .correction_bias_address =
                      correction_bias.has_value()
                          ? std::optional{require_cuda_address(*correction_bias, "MoE Router correction bias")}
                          : std::nullopt,
+                 .bias_address =
+                     bias.has_value() ? std::optional{require_cuda_address(*bias, "MoE Router bias")} : std::nullopt,
              };
            }),
-           py::arg("weight"), py::arg("correction_bias"));
+           py::arg("weight"), py::arg("correction_bias"), py::arg("bias") = py::none());
+
+  py::class_<xpool::ffnagent::Mxfp4ExpertBindingResourceProjection>(ffnagent, "Mxfp4ExpertBindingResourceProjection",
+                                                                    "Non-owning packed Expert scale/bias addresses.")
+      .def(py::init([](const at::Tensor &gate_up_scales, const at::Tensor &down_scales, const at::Tensor &gate_up_bias,
+                       const std::optional<at::Tensor> &down_bias) {
+             return xpool::ffnagent::Mxfp4ExpertBindingResourceProjection{
+                 .gate_up_scales_address = require_cuda_address(gate_up_scales, "MXFP4 gate/up scales"),
+                 .down_scales_address = require_cuda_address(down_scales, "MXFP4 down scales"),
+                 .gate_up_bias_address = require_cuda_address(gate_up_bias, "MXFP4 gate/up bias"),
+                 .down_bias_address = down_bias.has_value()
+                                          ? std::optional{require_cuda_address(*down_bias, "MXFP4 down bias")}
+                                          : std::nullopt,
+             };
+           }),
+           py::arg("gate_up_scales"), py::arg("down_scales"), py::arg("gate_up_bias"), py::arg("down_bias"));
 
   py::class_<xpool::ffnagent::MoeBindingResourceProjection>(ffnagent, "MoeBindingResourceProjection",
                                                             "Non-owning MoE weight addresses.")
       .def(py::init([](const at::Tensor &expert_gate_up_weight, const at::Tensor &expert_down_weight,
-                       std::optional<xpool::ffnagent::MoeRouterBindingResourceProjection> router) {
+                       std::optional<xpool::ffnagent::MoeRouterBindingResourceProjection> router,
+                       std::optional<xpool::ffnagent::Mxfp4ExpertBindingResourceProjection> mxfp4) {
              return xpool::ffnagent::MoeBindingResourceProjection{
                  .expert_gate_up_weight_address =
                      require_cuda_address(expert_gate_up_weight, "MoE Expert gate/up weights"),
                  .expert_down_weight_address = require_cuda_address(expert_down_weight, "MoE Expert down weights"),
                  .router = std::move(router),
+                 .mxfp4 = std::move(mxfp4),
              };
            }),
-           py::arg("expert_gate_up_weight"), py::arg("expert_down_weight"), py::arg("router"));
+           py::arg("expert_gate_up_weight"), py::arg("expert_down_weight"), py::arg("router"),
+           py::arg("mxfp4") = py::none());
 
   py::class_<xpool::ffnagent::DenseExecutionSignatureProjection>(ffnagent, "DenseExecutionSignatureProjection",
                                                                  "Captured Dense execution signature.")
