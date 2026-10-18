@@ -2,7 +2,7 @@
 devices = [0, 1]
 
 [ffn]
-devices = [2, 3, 4, 5, 6]
+devices = [2, 3, 4, 5]
 
 [scheduler]
 ffn_concurrency = 1

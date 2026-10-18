@@ -1,17 +1,23 @@
 # GPT-OSS with resident MXFP4 Experts
 
+Implementation and qualification are complete; the
+[qualification report](qualification.md) retains measured evidence. Current
+designs linked below own the implemented contracts. This completed target
+document, including its original baseline and acceptance materials, is retained
+for PR review at the user's request.
+
 ## Goal
 
 Support both official `openai/gpt-oss-20b` and `openai/gpt-oss-120b` models on
-seven NVIDIA A100 40GB devices within CrossPool's SGLang/CUDA boundary.
+six NVIDIA A100 40GB devices within CrossPool's SGLang/CUDA boundary.
 FfnAgents retain their local Expert
 weight shards in packed MXFP4 form in Device memory and execute the model's
 quantization-aware FFN. Hidden-state transport remains BF16 initially.
 
 The accepted implementation uses the A100 W4A16 path described below. Both
 model sizes and the initial ordinary Elastic KV storage policy are required.
-The operator experiment is the first implementation gate; qualification remains
-required before claiming model support.
+The operator experiment and qualification gates below define the accepted
+validation scope.
 
 The independently useful [SGLang research](research.md) records upstream source
 evidence, numerical semantics, and backend differences. Current owners are
@@ -46,8 +52,9 @@ upstream branch.
 
 ## Accepted Constraints
 
-- Hardware qualification uses only the available seven A100 40GB devices
-  (SM80). Blackwell and Hopper paths are outside this task.
+- Hardware qualification uses six A100 40GB devices (SM80), selected with
+  `CUDA_VISIBLE_DEVICES=1,2,3,4,5,6`. Physical device 0 is excluded.
+  Blackwell and Hopper paths are outside this task.
 - Both 20b and 120b are mandatory for first acceptance. Implementing one family
   adapter or qualifying only 20b is insufficient.
 - Expert matrices remain packed in Device memory; BF16 hidden states are the
@@ -99,11 +106,37 @@ The official 20b and 120b configurations use top-4. The Router bias contributes
 to both selection and probabilities; it is not the existing selection-only
 Router correction bias.
 
-On A100, the single-row Router retains fused GEMV bias. Multi-row execution
-materializes the BF16 matrix product before adding the BF16 bias. These
-operations preserve the pinned SGLang reference's rounding under the
-FfnAgent's zero-workspace cuBLAS policy; a fused multi-row `addmm` can change
-selected Experts near a TopK boundary.
+The A100 Router uses cuBLASLt's biased BF16 GEMM with an explicit 1-MiB
+workspace, matching the pinned original SGLang `Linear` path. Its selected
+algorithm may round Split-K partials to BF16 before reduction; replacing that
+operation with one FP32 dot product or an ordinary workspace-free GEMM can
+change selected Experts. The same contract applies to 32 and 128 Experts and
+to single-row and multi-row inputs. The surrounding FfnAgent retains its
+zero-workspace policy for ordinary Torch cuBLAS calls.
+
+The native `ffnagent.compute_bf16_router_logits` entry accepts BF16 input,
+Router weight, bias and output tensors plus one caller-owned 1-MiB byte
+workspace. It validates shapes, dtype, device, contiguity and workspace
+alignment, selects the bounded cuBLASLt algorithm during preparation, and
+enqueues work on the current stream. CUDA Graph capture freezes that choice;
+replay allocates no storage and uses no host callback. Library failure is a
+preparation error, with no backend switch. Host descriptors are scoped to the
+preparation call; all device intermediates reside in the supplied workspace.
+
+The native declaration exports the workspace byte count and 256-byte alignment.
+`GptOssAdapter.router_workspace_bytes` accounts for that storage, alignment
+padding and BF16 logits in the existing per-Lane Router workspace. Each Lane
+has independent storage, and native graph parameterization relocates every
+scratch pointer through the existing workspace range. The additional native
+entry advances the ABI to 86 and invalidates existing calibration profiles.
+Ordinary warmup retains the selected host algorithm value by device, matrix
+geometry and alignment. Capture requires a warmed combination and reuses that
+value; the cache owns no device allocation, layer pointer or per-Lane scratch.
+Builds select the cuBLASLt shared library from the pinned `nvidia-cublas`
+wheel used by Torch, while retaining the Toolkit headers paired with NVCC
+and CCCL. The installed native extension searches
+that sibling wheel directory so importing native code before Torch cannot
+mix cuBLAS handles with another Toolkit cuBLASLt release.
 
 For selected Expert `e`, using the decoded checkpoint weights:
 
@@ -164,6 +197,7 @@ All paths below are relative to `src/xpool/` unless stated otherwise.
 | `runtime/ffnagent/operators.py` | Own fixed startup kernel configuration and a quantized Expert launch accepting retained weights, fixed Routing Metadata, caller-owned workspace, and output. Put the tiled MXFP4 kernels in a directly imported `mxfp4.py` sibling; reusable low-level SGLang routing/alignment imports stay in `operators.py`. |
 | `runtime/ffnagent/registry.py` | Validate and retain quantized weight owners; create shape/layout-equivalent Primary/Control resources and project every scale/bias pointer for native binding. |
 | Native `ffnagent/projection.hpp`, parameterization, runtime, and bindings | Extend the existing MoE projection with optional typed `Mxfp4ExpertBindingResourceProjection` and Router additive bias. The packed schema adds both scales and Expert biases to binding values; validate schema presence, geometry, TP bias ownership, address access, and cross-Capacity consistency. |
+| Native `ffnagent/router.hpp`, implementation, and bindings | Add `compute_bf16_router_logits(hidden_states, weight, bias, output, workspace)` with explicit bounded cuBLASLt scratch and exported workspace geometry; retain the existing graph resource schema. |
 | `integrations/sglang/models/gpt_oss.py` | Add a parameter-free `GptOssSparseMoeBlock` replacement, exact upstream constructor/forward compatibility, FFN namespace filtering, and full-boundary validation. |
 | `integrations/sglang/server_args.py` | Replace blanket quantization rejection with the narrow admitted GPT-OSS/MXFP4 combination and verify effective model quantization again after config resolution. Other quantizers remain unsupported. |
 
@@ -292,13 +326,13 @@ includes it in the mixed held-out world. It covers scale/bias allocation count,
 packed Control Probes, and quantized Graph Capture topology. Existing profiles
 are invalidated by the Native ABI Version change.
 
-### Seven-device deployment and capacity
+### Six-device deployment and capacity
 
-Start with two attention devices and five FFN devices. Both models use
+Start with two attention devices and four FFN devices. Both models use
 attention TP2/DP1 and explicit FFN TP1. The existing placement solver assigns
 whole layers to FFN devices; it may use a subset of the Fleet according to its
 existing group-minimization and memory-admission objectives. Do not confuse
-five FFN devices with FFN TP5. TP2 is a separate component/topology acceptance
+four FFN devices with FFN TP4. TP2 is a separate component/topology acceptance
 case for bias/sharding correctness.
 
 Ignoring biases and other resources, the official Expert matrices require:
@@ -312,17 +346,18 @@ Ignoring biases and other resources, the official Expert matrices require:
 These are derived from `3 * layers * Experts * H * I` elements at `17/32`
 bytes per element for packed values/scales. One 120b layer occupies about
 1.576 GiB before bias/Router resources. Thus the weight-only estimate fits
-comfortably within five 40GB FFN devices, including both models; installed
-readiness still depends on the complete ledger and observed free memory.
+within the aggregate capacity of four 40GB FFN devices, including both models;
+installed readiness still depends on the complete ledger and observed free memory.
 
 Use a bounded initial serving context, proposed at 8192 tokens, and small
 explicit concurrency for qualification. Exercise a prompt longer than the
-4096-token sliding window. Ordinary MHA storage allocates both K and V for
-every retained token/layer: for 120b BF16 at attention TP2 the ideal KV storage
+configured sliding window; the retained workload uses 4097 input tokens.
+Ordinary MHA storage allocates both K and V for every retained token/layer:
+for 120b BF16 at attention TP2 the ideal KV storage
 is `2 * 36 * (8/2) * 64 * 2 = 36,864` bytes per token per attention rank,
 or 288 MiB for one 8192-token sequence, before allocator/page rounding.
 Include separate per-model KV pools, unquantized model weights, graph storage,
-and runtime headroom; seven-card aggregate capacity is not an admission proof.
+and runtime headroom; six-device aggregate capacity is not an admission proof.
 
 ## Implementation
 
@@ -381,8 +416,10 @@ outside the proposed first quantization change.
 
 ## Validation
 
-The [manual qualification guide](testing.md) provides the seven-A100 deployment,
+The [manual qualification guide](testing.md) provides the six-A100 deployment,
 checkpoint preflight, and ordered numerical/serving commands for both models.
+The [qualification report](qualification.md) records the measured environment,
+retained verdicts, and accepted scope.
 
 - **Source and loader:** strict metadata/key/header checks; independent E2M1
   nibble decoding and UE8M0 scale application, including signs, zeros, scale
@@ -393,6 +430,9 @@ checkpoint preflight, and ordered numerical/serving commands for both models.
   clipping, alpha, `up + 1`, both Expert biases, and route-weight placement.
   Use synthetic boundary cases plus real checkpoints. Tie handling must be
   explicit and compared with the chosen independent reference.
+  Router regression covers both 32 and 128 Experts, single-row and multi-row
+  inputs, original default-workspace SGLang/Torch routing, workspace-free
+  FfnAgent construction, allocation-free replay, and actual native rebinding.
 - **Operators:** compare an independently decoded FP32 formula for diagnosis
   and original SGLang FFN execution of the MXFP4 checkpoint for qualification.
   The A100 reference may expand one isolated layer using the upstream generic

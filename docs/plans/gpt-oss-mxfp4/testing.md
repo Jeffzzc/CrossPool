@@ -1,9 +1,12 @@
 # GPT-OSS MXFP4 manual qualification
 
-This guide runs the implemented GPT-OSS checks on seven A100 40GB devices.
+This guide runs the implemented GPT-OSS checks on six A100 40GB devices,
+restricted to physical device indices 1 through 6.
 The checkpoint owner supplies the original MXFP4 Safetensors checkpoint.
-Real-checkpoint qualification remains pending until these commands succeed;
-synthetic component results do not establish model readiness.
+The [retained qualification report](qualification.md) records passing results
+for both real checkpoints, memory qualification and the strict repository suite.
+The commands below reproduce those checks; synthetic component results alone
+do not establish model readiness.
 
 ## 1. Select the checkout and devices
 
@@ -12,28 +15,32 @@ Run all commands from the same shell:
 ```bash
 cd /home/LAB/zuozc26/CrossPool
 if [ -f .env ]; then export UV_ENV_FILE="$PWD/.env"; fi
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6
+export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6
 export XPOOL_CONFIG="$PWD/configs/gpt-oss-20b.local.toml"
 nvidia-smi
 ```
 
-Reserve all seven devices for this run. The portable deployment uses two
-attention devices with TP2 and five FFN devices with TP1 and one Executor Lane.
+Reserve these six devices for this run. The portable deployment uses two
+attention devices with TP2 and four FFN devices with TP1 and one Executor Lane.
+Configuration indices are relative to the visible view: attention indices
+`[0, 1]` select physical devices 1 and 2, and FFN indices `[2, 3, 4, 5]`
+select physical devices 3 through 6. Physical device 0 is excluded.
 Run the following stages sequentially. `xtest` owns the daemon, serving workers,
 MPS preparation, and shutdown; start the tests without a separately running
 CrossPool daemon or serving instance on those devices.
 
 ## 2. Configure the checkpoint
 
-Place the checkpoint directly under
-`models/openai/gpt-oss-20b/`, including `config.json`, the complete
+The current checkpoint is at `/home/LAB/yezr/models/openai/gpt-oss-20b/`.
+Supply `config.json`, the complete
 `model.safetensors.index.json` and all its referenced shards, and the original
 tokenizer/configuration files. Preserve the serialized MXFP4 blocks and scales.
 The shard files must be regular files: this repository's checkpoint boundary
 rejects symbolic links to shards.
 
 The local file `configs/gpt-oss-20b.local.toml` has been prepared for this
-checkout and is intentionally ignored by Git. Its complete contents are:
+checkout and is intentionally ignored by Git. A complete configuration for
+these checkpoints is:
 
 ```toml
 cache_root = "../.xpool-cache"
@@ -54,21 +61,22 @@ slo = { ttft_ms = 1000, tbt_ms = 50 }
 devices = [0, 1]
 
 [ffn]
-devices = [2, 3, 4, 5, 6]
+devices = [2, 3, 4, 5]
+device_memory_calibration = "/home/LAB/zuozc26/CrossPool/.xpool-cache/qualification/gpt-oss-20261017-router/memory-calibration.json"
 device_memory_extra_margin_bytes = 0
 
 [vendor]
-model_base_uri = "/home/LAB/zuozc26/CrossPool/models"
+model_base_uri = "/home/LAB/yezr/models"
 
 [[models]]
 id = "openai/gpt-oss-20b"
-path = "/home/LAB/zuozc26/CrossPool/models/openai/gpt-oss-20b"
+path = "/home/LAB/yezr/models/openai/gpt-oss-20b"
 atn_tp_size = 2
 atn_dp_size = 1
 ffn_tp_size = 1
 ```
 
-On another checkout, adjust the two absolute paths and the shell's working
+On another checkout, adjust the absolute paths and the shell's working
 directory. Keep runtime model paths in CrossPool configuration.
 
 ## 3. Build the matching native extension
@@ -79,8 +87,21 @@ uv run --no-sync xpool config dump
 ```
 
 Rebuilding is required because the quantized graph resources change the native
-ABI from 84 to 85. Inspect the dump for the selected model, path, and device
-groups before continuing.
+ABI to 86, including the explicit Router GEMM entry. Inspect the dump for the
+selected model, path, and device groups before continuing.
+
+Generate the model-neutral memory calibration before loading real weights:
+
+```bash
+uv run --no-sync xpool memory-profile
+```
+
+This runs 18 fitting and three held-out worlds on the selected devices and
+writes the configured calibration path. Keep a matching existing profile
+instead of regenerating it when its ABI, allocator, software and device
+environment are unchanged. An ABI-85 profile cannot be used with ABI 86.
+The calibration accounts for NVSHMEM and library startup overhead; an
+uncalibrated placement can exhaust a 40-GB device during communication setup.
 
 ## 4. Check checkpoint metadata before loading CUDA weights
 
@@ -126,7 +147,10 @@ They cover TP1/TP2 loading and computation, independent numerical decoding,
 bias placement, invalid tails, allocation-free graph replay, native repeated
 layer rebinding with separate Lane resources, and the original isolated
 SGLang layer reference with current, legacy, and absent dtype metadata. Expect
-eight passing tests, including workspace-free Router rounding. Reference
+nine passing tests, including 32- and 128-Expert Router rounding over every
+power-of-two row capacity from 1 through 16384. The Router owns an explicit
+1-MiB cuBLASLt scratch region within its accounted per-Lane workspace;
+ordinary Torch GEMMs retain the FfnAgent zero-workspace policy. Reference
 construction uses SGLang's resolved runtime dtype
 and its loader's scoped default-dtype context; checkpoint metadata can omit the
 dtype fields.
@@ -195,7 +219,7 @@ Raw evidence is under `.xpool-cache/test-runs/<RUN_ID>/`. Keep `run.json`,
 `results.json`, the failing task's `pytest.log` and `pytest.xml`, and its
 daemon/server logs. Serving attempts also retain inference requests/responses
 and graph/logit evidence. For an OOM, retain `nvidia-smi` output and startup
-logs; seven-card capacity, especially 120b capacity, is subject to measured
+logs; six-device capacity, especially 120b capacity, is subject to measured
 placement and memory demand.
 
 An observed existing MPS endpoint directory is a startup failure. Preserve the
@@ -204,7 +228,7 @@ normal shutdown rather than deleting a potentially live MPS directory.
 
 ## 10. Repeat for 120b and finish repository acceptance
 
-When the 120b checkpoint is available at `models/openai/gpt-oss-120b/`, create a
+The 120b checkpoint is at `/home/LAB/yezr/models/openai/gpt-oss-120b/`. Use a
 separate local config with the same topology and replace both occurrences of
 `openai/gpt-oss-20b` with `openai/gpt-oss-120b`. Export that file as
 `XPOOL_CONFIG`, repeat the metadata check, and run:
@@ -214,14 +238,35 @@ uv run --no-sync xtest run --suite openai/gpt-oss-120b --strict-requirements
 ```
 
 The 120b numerical case selects layers 0 and 35. Its checkpoint and resource
-evidence are independent of the 20b result. There is no completed proof yet
-that the accepted seven-card topology can start and serve 120b.
+evidence are independent of the 20b result. Preserve its complete model-suite
+verdict before claiming that the six-device topology can serve it.
 
 The accepted plan additionally requires model-neutral memory calibration,
 real-model baseline/pressure qualification, the complete strict repository
 suite, and documentation alignment before claiming complete support. The
 commands above provide numerical and serving qualification; they do not
-replace those remaining resource gates. For the complete ordinary suite,
+replace those resource gates, whose passing evidence is retained in the
+[qualification report](qualification.md). For the complete ordinary suite,
 restore a local configuration containing its required existing Qwen/DeepSeek
 checkpoints before running `uv run --no-sync xtest run --strict-requirements`.
 The single-model GPT-OSS configuration cannot supply those unrelated fixtures.
+
+This checkout also has `configs/gpt-oss-qualification.local.toml` listing both
+checkpoints. To repeat their complete suites sequentially in one invocation:
+
+```bash
+export XPOOL_CONFIG="$PWD/configs/gpt-oss-qualification.local.toml"
+uv run --no-sync xtest run \
+  --suite openai/gpt-oss-120b --suite openai/gpt-oss-20b \
+  --strict-requirements
+```
+
+To reproduce the complete ordinary repository suite using its prepared local
+configuration:
+
+```bash
+export XPOOL_CONFIG="$PWD/configs/xpool.local.toml"
+uv run --no-sync xtest run --strict-requirements
+```
+
+Keep `CUDA_VISIBLE_DEVICES=1,2,3,4,5,6` exported for both invocations.

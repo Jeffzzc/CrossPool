@@ -206,7 +206,13 @@ def test_mxfp4_capture_accounts_every_weight_resource(tmp_path: Path) -> None:
         compute_routed_topk=GptOssAdapter.compute_routed_topk,
         router_weight_dtype=torch.bfloat16,
         routed_expert_count=4,
-        router_workspace_bytes=19 * 4 * 2,
+        router_workspace_bytes=GptOssAdapter.router_workspace_bytes(
+            payload_dtype=torch.bfloat16,
+            payload_row_capacity=19,
+            hidden_size=96,
+            routed_expert_count=4,
+            routed_topk=2,
+        ),
         correction_bias_present=False,
         renormalize=True,
         bias_present=True,
@@ -309,9 +315,10 @@ def test_mxfp4_installed_graph_rebinds_layers_and_tp_bias(tmp_path: Path) -> Non
         assert isinstance(selected_layer, ffn.MoeFfnSpec)
         assert isinstance(selected_layer.checkpoint, ffn.Mxfp4MoeCheckpointKeys)
         k = selected_layer.checkpoint
-        # Explicitly model the multi-row BF16 product and bias boundaries.
-        router_product = (x.float() @ tensors[k.router_weight_key].float().T).bfloat16()
-        logits = router_product.add(tensors[k.router_bias_key])
+        # Original CUDA Linear owns the Router's library-specific BF16 rounding.
+        logits = torch.nn.functional.linear(
+            x.cuda(), tensors[k.router_weight_key].cuda(), tensors[k.router_bias_key].cuda()
+        ).cpu()
         values, ids = torch.topk(logits.float(), 2, dim=-1)
         reference = layer_reference(x, tensors, k, ids, torch.softmax(values, dim=-1))
         actual = safetensors.torch.load_file(invocation.output_path)["hidden_states"]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+import xpool.native
 from xpool import ffn
 from xpool.model import ModelId
 from xpool.native.ffn import LayerKind
@@ -32,10 +33,15 @@ class GptOssAdapter(architecture.MoeFfnModelAdapter):
         routed_expert_count: int,
         routed_topk: int,
     ) -> int:
-        """Return the exact BF16 logits extent."""
+        """Account for aligned explicit cuBLASLt scratch and BF16 logits."""
 
         GptOssAdapter.router_weight_dtype(payload_dtype=payload_dtype)
-        return payload_row_capacity * routed_expert_count * 2
+        return (
+            xpool.native.ffnagent.BF16_ROUTER_WORKSPACE_BYTES
+            + xpool.native.ffnagent.BF16_ROUTER_WORKSPACE_ALIGNMENT
+            - 1
+            + payload_row_capacity * routed_expert_count * 2
+        )
 
     @staticmethod
     def compute_routed_topk(
@@ -51,14 +57,18 @@ class GptOssAdapter(architecture.MoeFfnModelAdapter):
 
         if router_weights.bias is None or router_weights.correction_bias is not None or not renormalize:
             raise ValueError("GPT-OSS requires additive Router bias and normalized TopK")
-        logits = workspace.view(torch.bfloat16).view(hidden_states.shape[0], router_weights.weight.shape[0])
-        if hidden_states.shape[0] == 1:
-            torch.addmm(router_weights.bias, hidden_states, router_weights.weight.t(), out=logits)
-        else:
-            # GEMM rounds its BF16 product before bias; GEMV keeps fused bias.
-            # Preserve both boundaries with the FfnAgent's zero cuBLAS workspace.
-            torch.mm(hidden_states, router_weights.weight.t(), out=logits)
-            logits.add_(router_weights.bias)
+        alignment = xpool.native.ffnagent.BF16_ROUTER_WORKSPACE_ALIGNMENT
+        begin = (-workspace.data_ptr()) % alignment
+        end = begin + xpool.native.ffnagent.BF16_ROUTER_WORKSPACE_BYTES
+        logits_bytes = hidden_states.shape[0] * router_weights.weight.shape[0] * 2
+        logits = (
+            workspace[end : end + logits_bytes]
+            .view(torch.bfloat16)
+            .view(hidden_states.shape[0], router_weights.weight.shape[0])
+        )
+        xpool.native.ffnagent.compute_bf16_router_logits(
+            hidden_states, router_weights.weight, router_weights.bias, logits, workspace[begin:end]
+        )
         operators.compute_softmax_topk(
             logits=logits, routed_ids=routed_ids, routed_weights=routed_weights, renormalize=True
         )
