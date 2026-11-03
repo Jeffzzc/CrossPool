@@ -89,6 +89,8 @@ class CapacityRequestReceiver:
 def compute_reservation_budget(configurator: KVCacheConfigurator, pre_model_load_memory: int) -> int:
     """Reserve virtual capacity independently of other models' launch order."""
 
+    if configurator.mambaish_config is not None:
+        raise RuntimeError("xpool GDN ECS pool installation is pending; static Mamba state allocation is disabled")
     utilization = min(get_global_config().atn.device_memory_utilization, get_schedule().mem_fraction_static)
     return int(torch.cuda.get_device_properties(configurator.device).total_memory * utilization)
 

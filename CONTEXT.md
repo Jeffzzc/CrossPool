@@ -161,6 +161,12 @@ A reusable snapshot of recurrent state at a processed prefix, distinct from
 the active state advanced by an executing request.
 _Avoid_: Active Recurrent State, token KV page
 
+**Recurrent State Slot**:
+One logical storage unit for a complete Active Recurrent State or Recurrent
+Checkpoint across a model's recurrent layers. Its ownership is independent of
+the token positions represented by KV Cache pages.
+_Avoid_: Token KV page, request-table row, physical-memory bundle
+
 **Elastic Context State Memory Quota**:
 The physical-memory allowance assigned to an Instance on one attention Device
 for its managed Elastic Context State, distinct from the memory currently

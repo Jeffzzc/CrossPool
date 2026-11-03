@@ -20,6 +20,7 @@ SUPPORTED_MODEL_CLASSES = frozenset(
         "Qwen2ForCausalLM",
         "Qwen3ForCausalLM",
         "Qwen3MoeForCausalLM",
+        "Qwen3_5ForConditionalGeneration",
     }
 )
 
@@ -133,6 +134,7 @@ def run_ffn_reference_rank(
         cuda_graph_backend_decode="disabled",
         cuda_graph_backend_prefill="disabled",
         disable_custom_all_reduce=True,
+        json_model_override_args='{"language_model_only":true}' if job.language_model_only else "{}",
     )
     sglang.srt.runtime_context.publish(server_args, role="scheduler")
     sglang.srt.layers.moe.utils.initialize_moe_config()

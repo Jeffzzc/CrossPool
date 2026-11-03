@@ -117,6 +117,7 @@ class E2eFfnNumericalCase(BaseModel):
     input_matrix: E2eFfnInputMatrix
     estimated_duration_seconds: float = Field(gt=0)
     timeout_seconds: float = Field(gt=0)
+    language_model_only: bool = False
 
     @model_validator(mode="after")
     def validate_case(self) -> Self:

@@ -15,7 +15,6 @@ from xpool import ffn
 
 INDEX_FILENAME = "model.safetensors.index.json"
 SINGLE_FILE_NAME = "model.safetensors"
-MAIN_FFN_KEY_PATTERN = re.compile(r"^model\.layers\.(?P<layer_id>[0-9]+)\.mlp\.")
 
 
 def parse_json_object(payload: bytes, *, source: Path) -> dict[str, JsonValue]:
@@ -82,13 +81,23 @@ def validate_ffn_coverage(
     key_view: Mapping[str, Path],
     *,
     allow_trailing_ffn_layers: bool,
+    decoder_prefix: str = "model.layers",
 ) -> None:
     """Require exact family-owned FFN keys for every main decoder layer."""
 
+    pattern = re.compile(rf"^{re.escape(decoder_prefix)}\.(?P<layer_id>[0-9]+)\.mlp\.")
     expected_by_layer = {layer.layer_id: set(layer.tensor_keys()) for layer in spec.layers}
     all_checkpoint_keys = set(key_view)
+    alternatives = {"model.layers", "model.language_model.layers"} - {decoder_prefix}
+    mixed = sorted(
+        key
+        for key in all_checkpoint_keys
+        if any(key.startswith(f"{prefix}.") and ".mlp." in key for prefix in alternatives)
+    )
+    if mixed:
+        raise ValueError(f"checkpoint mixes decoder FFN namespaces: {mixed}")
     for layer_id, expected_keys in expected_by_layer.items():
-        prefix = f"model.layers.{layer_id}.mlp."
+        prefix = f"{decoder_prefix}.{layer_id}.mlp."
         actual_keys = {key for key in all_checkpoint_keys if key.startswith(prefix)}
         if actual_keys != expected_keys:
             missing = sorted(expected_keys - actual_keys)
@@ -99,7 +108,7 @@ def validate_ffn_coverage(
         return
     trailing_keys = []
     for key in all_checkpoint_keys:
-        match = MAIN_FFN_KEY_PATTERN.match(key)
+        match = pattern.match(key)
         if match is not None and int(match.group("layer_id")) not in expected_by_layer:
             trailing_keys.append(key)
     if trailing_keys:

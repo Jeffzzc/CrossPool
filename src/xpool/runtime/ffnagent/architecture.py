@@ -127,6 +127,7 @@ class FfnModelAdapter(ABC):
     """Compile one strict model-family configuration into FFN semantics."""
 
     architecture_name: str
+    checkpoint_decoder_prefix = "model.layers"
 
     @classmethod
     @abstractmethod
@@ -194,6 +195,7 @@ def load(*, model_id: ModelId, model_path: pathlib.Path) -> ffn.FfnModelSpec:
             spec,
             key_view,
             allow_trailing_ffn_layers=architecture_name == "Glm4MoeLiteForCausalLM",
+            decoder_prefix=adapter.checkpoint_decoder_prefix,
         )
         return spec
     except Exception as error:

@@ -24,6 +24,7 @@ class FfnReferenceJob:
     tensor_parallel_size: int
     workdir: Path
     cases: tuple[FfnReferenceCaseSpec, ...]
+    language_model_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)

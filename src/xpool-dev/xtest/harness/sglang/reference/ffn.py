@@ -57,6 +57,7 @@ class SglangFfnReferenceRunner:
         model_path: Path,
         tensor_parallel_size: int,
         cases: Sequence[SglangFfnReferenceCase],
+        language_model_only: bool = False,
     ) -> tuple[SglangFfnReferenceResult, ...]:
         """Load one raw model, evaluate every case, and release the child.
 
@@ -126,6 +127,7 @@ class SglangFfnReferenceRunner:
                 tensor_parallel_size=tensor_parallel_size,
                 workdir=self.workdir,
                 cases=tuple(case_specs),
+                language_model_only=language_model_only,
             ),
             log_path=self.workdir / "child.log",
         )

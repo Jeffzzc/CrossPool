@@ -120,6 +120,7 @@ def run_numerical_case(
         model_path=model_path,
         tensor_parallel_size=ffn_tp_size,
         cases=reference_cases,
+        language_model_only=case.language_model_only,
     )
 
     endpoint = TcpEndpointReservation.reserve(config.daemon.host, port_space=TcpPortSpace.local())

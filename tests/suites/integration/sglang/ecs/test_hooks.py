@@ -51,9 +51,13 @@ def test_virtual_reservation_uses_device_envelope_instead_of_launch_order_memory
     )
     configurator = object.__new__(KVCacheConfigurator)
     configurator.device = "cuda:0"
+    configurator.mambaish_config = None
     with get_context().override_server_args(mem_fraction_static=0.6):
         assert hooks.ecs.compute_reservation_budget(configurator, 200) == 600
         assert hooks.ecs.compute_reservation_budget(configurator, 800) == 600
+    configurator.mambaish_config = object()
+    with pytest.raises(RuntimeError, match="static Mamba state allocation is disabled"):
+        hooks.ecs.compute_reservation_budget(configurator, 200)
 
 
 def test_statistics_exclude_free_unavailable_ids_but_conservation_checks_the_full_reservation(
