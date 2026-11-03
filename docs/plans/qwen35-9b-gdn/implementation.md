@@ -57,3 +57,51 @@ Uncovered at this phase: attention TP2 forward collective correctness,
 production GDN backing, request/cache state ownership, HTTP serving,
 elasticity and complete model qualification. Earlier preflight model/Graph
 results validate the prototype, not this production adapter.
+
+## Phase 2: production GDN storage
+
+`GdnVmmBacking` owns typed Layer-major planes, runtime minimum/recommended
+granularity, and one zero-offset handle for every layer frame. Only outer
+layer padding changes. Each plane prices its own cross-layer bundles against
+the same `MemoryQuota` as Full KV. Partial construction and cleanup retain
+frame-level inventory and confirmed charges; a failed plane cannot publish
+usable coverage. `ElasticMambaPool` consumes prepared storage directly and
+retains upstream clear/copy and layer access. The native full-state constructor
+is never called.
+
+Retirement validates the allocator's free-coverage witness, excludes retiring
+coverage from deliverability, records an event on the execution stream, and
+refunds only confirmed physical releases after that event completes. Recording
+failure retains withdrawal and charges. The caller still owns logical slot
+withdrawal and must exclude active/cache/COW/snapshot/group owners from the
+witness; production Scheduler installation belongs to phase 3.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3,4 UV_ENV_FILE=.env uv run --no-sync xtest run \
+  tests/suites/integration/sglang/ecs/test_gdn_backing.py \
+  tests/suites/integration/sglang/ecs/test_gdn_backing_device.py --strict-requirements
+CUDA_VISIBLE_DEVICES=0,1,2,3,4 UV_ENV_FILE=.env uv run --no-sync xtest run \
+  tests/suites/integration/sglang/ecs/test_vmm.py --strict-requirements
+```
+
+Final storage run `20261103-085820-3124428-493762082718956`: 14 passed,
+0 skipped, 0 failed (12 fault/accounting tests, TP1 and TP2 device cases).
+[Raw shape, stride, frame and numerical evidence](backing-results.json)
+includes source hashes. All 24 original GDN layers passed cold and continuation
+prefill, native clear/copy, Decode capture, index changes/padding, and replay
+after event-ordered unmap/remap. Output and state errors were exactly zero.
+No original full-state allocation occurred; the small four-slot native oracle
+exists only in the test. Necessary layer padding exercises native fused slot
+operations when naturally contiguous and the upstream fallback otherwise.
+Existing KV VMM regression run `20261103-085952-3127524-493853905377328`
+also passed all 14 cases without skips. Ruff and type checks passed.
+
+The device test also exhausted the shared quota, released distant unowned GDN
+frames after an execution event, grew actual Full backing with that permission,
+then released Full and restored GDN using the same Graph and Tensor pointers.
+This proves physical/quota primitives, not cache-driven multi-model elasticity.
+
+Uncovered: production slot allocation and cache receipts, TP-coordinated
+rollback/eviction, quota commands during live serving, complete model Graph
+and HTTP qualification. The phase-1 launch guard remains active until those
+owners are installed; the backing alone does not enable serving.

@@ -114,7 +114,7 @@ vision 跳过由上游 `language_model_only` 完成；媒体请求沿用该模�
 `ElasticMambaSlotAllocator`。保持 hybrid 类型，不能用普通 `ReqToTokenPool`
 替代；沿用 `mamba_map` 和 request-to-state 映射。
 
-新增专用 `RecurrentVmmBacking`，不用只支持同 dtype/同 shape 的
+新增专用 `GdnVmmBacking`，不用只支持同 dtype/同 shape 的
 `KvVmmBacking` 冒充 recurrent storage。它持有 conv planes 和 temporal
 plane、每个 plane 的稳定 VA 与稀疏物理 inventory；所有 plane 与 Full KV
 共用一个 `ecs.MemoryQuota`。数据仍为上游逻辑布局：
@@ -319,10 +319,10 @@ Tensor 的整体清零来完成 warmup。
 本方案的目标声明，当前源码尚不存在：
 
 ```python
-RecurrentVmmBacking.describe(*, device, size, cache_params, layer_ids) -> RecurrentVmmLayout
-RecurrentVmmBacking.plan_slots(slot_ids: torch.Tensor) -> RecurrentBackingPlan
-RecurrentVmmBacking.try_map(plan: RecurrentBackingPlan) -> bool
-RecurrentVmmBacking.empty_bundles(free_slot_ids: torch.Tensor) -> tuple[tuple[int, ...], ...]
+GdnVmmBacking.describe(*, device, size, cache_params, layer_ids) -> tuple[GdnPlaneLayout, ...]
+GdnVmmBacking.plan_slots(slot_ids: torch.Tensor) -> GdnBackingPlan
+GdnVmmBacking.try_map(plan: GdnBackingPlan) -> bool
+GdnVmmBacking.empty_bundles(free_slot_ids: torch.Tensor) -> tuple[tuple[int, ...], ...]
 
 ElasticMambaSlotAllocator.plan_slots(count: int) -> SglangSlotPlan | None
 ElasticMambaSlotAllocator.begin_retirement(bundle_ids_by_plane) -> None
